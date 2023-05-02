@@ -8,6 +8,7 @@ import numpy as np
 import rospy
 from sensor_msgs.msg import Image, LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
+from std_msgs.msg import Float32
 
 class reactive_follow_gap:
     def __init__(self):
@@ -23,17 +24,35 @@ class reactive_follow_gap:
             1.Setting each value to the mean over some window
             2.Rejecting high values (eg. > 3m)
         """
+        
+        front_angles = []
+        count = 0 
+        for r in ranges:
+            if count < len(ranges)/4 or count > 3*len(ranges)/4:
+                front_angles.append(0)
+            else:
+                front_angles.append(1)
+            count = count + 1
+
+
         proc_ranges = []
-        i = 1
-        maxDist = 3
+        i = 0
+        maxDist = 6
+        minDist = 1
         
         for r in ranges:
-            if np.isnan(r):
+            if front_angles[i]:
+                if np.isnan(r) or r < minDist:
+                    proc_ranges.append(0)
+                elif r > maxDist or np.isinf(r):
+                    proc_ranges.append(maxDist)
+                else: 
+                    proc_ranges.append(r)
+            else:
                 proc_ranges.append(0)
-            elif r > maxDist or np.isinf(r):
-                proc_ranges.append(maxDist)
-            else: 
-                proc_ranges.append(0)
+            i = i + 1
+            
+
         return proc_ranges
 
     def find_max_gap(self, free_space_ranges):
@@ -67,49 +86,8 @@ class reactive_follow_gap:
             maxStart = currentStart
             maxSize = currentSize
             
-        return maxStart, maxStart + maxSize -1
-        
-        """a = 1
-        index = []
-        for r in ranges:
-        	if r > np.amax(ranges) - 2: 
-        		index.append(a)
-       		a = a + 1
-        	
-        gapEdgeFront = [index[0]]
-        gapEdgeBack = []
-        iPrev = 0
-        for i in index: 
-        	if i - iPrev > 1: 
-        		gapEdgeFront.append(i)
-        		gapEdgeBack.append(iPrev)
-        	iPrev = i
-        	
-        gapEdgeBack.append(index[-1])
-        
-        gapSize = 0
-        count = 0
-        
-        print("----------------------")
-        print(gapEdgeFront)
-        print(gapEdgeBack) 
-        
-        for gap in gapEdgeFront:
-        	if gapEdgeBack[count] - gap > gapSize:
-        		gapSize = gapEdgeBack[gapEdgeFront.index(gap)] - gap
-        		gapNumber = count
-        		
-        	count = count + 1
-        		
-        print(gapSize) 
-        print(gapEdgeFront[gapNumber])
-        print(gapEdgeBack[gapNumber])
-        print(gapNumber)
-        
-        start_i = gapEdgeFront[gapNumber]
-        end_i = gapEdgeBack[gapNumber]
-        
-        return start_i, end_i"""
+        return maxStart, maxStart + maxSize - 1
+
     
     def find_best_point(self, start_i, end_i, ranges):
         """Start_i & end_i are start and end indicies of max-gap range, respectively
@@ -117,33 +95,26 @@ class reactive_follow_gap:
 	Naive: Choose the furthest point within ranges and go there
         """
         
-        pointInd = (end_i + start_i) /2
-        
-        return pointInd
-        
-        """
-        gapSize = end_i - start_i
-        
-        indAdd = 0
-        maxPoint = 0;
-        pointInd = 0;
-        while indAdd < gapSize: 
-        	if ranges[start_i + indAdd] > maxPoint: 
-        		maxPoint = ranges[start_i + indAdd]
-        		pointInd = start_i + indAdd
-        	indAdd = indAdd + 1
-        	
-        if pointInd > end_i: 
-            pointInd = end_i
-        	
-        return maxPoint, pointInd"""
+	pointInd = (end_i + start_i) / 2 
 
-
+        farInd = 0
+        i = 0
+        
+        for r in ranges:
+            if i >= start_i and i <= end_i:
+                if ranges[i] > ranges[pointInd]:
+                    farInd = i
+            i = i + 1
+        
+        return pointInd, farInd
+      
     def lidar_callback(self, data):
         """ Process each LiDAR scan as per the Follow Gap algorithm & publish an AckermannDriveStamped Message
         """
         ranges = data.ranges
         proc_ranges = self.preprocess_lidar(ranges)
+        
+        #print(proc_ranges)
         
         minPoint = np.amin(proc_ranges)
         
@@ -165,11 +136,8 @@ class reactive_follow_gap:
         
         start_i, end_i = self.find_max_gap(proc_ranges)
         
-        print('------------')
-        print(start_i)
-        print(end_i)
-        
-        pointInd = self.find_best_point(start_i, end_i, ranges)
+
+        pointInd, farInd = self.find_best_point(start_i, end_i, proc_ranges)
         
         minAng = data.angle_min
         angInc = data.angle_increment
@@ -178,39 +146,36 @@ class reactive_follow_gap:
         
         angle = minAng + angInc * pointInd
         
-        if angle > math.pi:
-            angle = angle - 2 * math.pi
-            
-        print(pointInd)
+       # if angle > math.pi:
+        #    angle = angle - 2 * math.pi
         
         midPoint = len(ranges)/2
         
-        if pointInd < midPoint: 
-            """need neg steering angle"""
-        
-            steeringAngle = -angInc * (midPoint - pointInd)
-        
-        else: 
-            """ need pos steering angle"""
-            steeringAngle = angInc * (midPoint - pointInd)
+
+        steeringAngle = angInc * (midPoint + pointInd) - 2 * np.pi
+
             
-        if steeringAngle > 1.57:
-            steeringAngle = 1.57
-        elif steeringAngle < -1.57:
-            steeringAngle = -1.57
+        #if steeringAngle > 1.57:
+         #   steeringAngle = 1.57
+        #elif steeringAngle < -1.57:
+         #   steeringAngle = -1.57
             
         steeringAngleDeg = steeringAngle * 180/math.pi
-        print(midPoint)
-        print(steeringAngleDeg)
+
+        farthest = ranges[farInd]
         
-        
+        if minPoint > 4: 
+            velocity = .5
+        else:
+            velocity = 1
+
         
         
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = rospy.Time.now()
         drive_msg.header.frame_id = "laser"
         drive_msg.drive.steering_angle = steeringAngle
-        drive_msg.drive.speed = 1
+        drive_msg.drive.speed = velocity
         self.drive_pub.publish(drive_msg)
         
 
